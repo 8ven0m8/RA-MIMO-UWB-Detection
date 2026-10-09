@@ -1,0 +1,57 @@
+# Antenna II benchmark config: deterministic deep ensemble MLP + LSTM +
+# Transformer (deep, flat) vs classical ML (flat), evaluated via a single
+# train/test split, matching the paper's Section 5/6 protocol.
+
+task: antenna2
+data_dir: data/raw/antenna2
+results_dir: results/antenna2
+seed: 42
+test_size: 0.2
+
+data_generation:
+  n_sweep_points: 50
+
+classical_models:
+  random_forest:
+    n_estimators: 200
+    max_depth: null
+  decision_tree:
+    max_depth: 8
+  xgboost:
+    n_estimators: 300
+    max_depth: 6
+    learning_rate: 0.05
+  catboost:
+    iterations: 300
+    depth: 6
+    learning_rate: 0.05
+
+deep_models:
+  - name: deep_ensemble
+    n_members: 5
+    hidden: [256, 128, 64]
+    dropout: 0.2
+    max_epochs: 300
+    patience: 40
+    batch_size: 64
+    lr: 0.001
+    weight_decay: 0.00001
+  - name: lstm
+    hidden_size: 32
+    num_layers: 1
+    dropout: 0.1
+    max_epochs: 200
+    patience: 20
+    batch_size: 64
+    lr: 0.001
+    weight_decay: 0.00001
+  - name: transformer
+    d_model: 32
+    nhead: 4
+    num_layers: 2
+    dropout: 0.1
+    max_epochs: 200
+    patience: 20
+    batch_size: 64
+    lr: 0.001
+    weight_decay: 0.00001

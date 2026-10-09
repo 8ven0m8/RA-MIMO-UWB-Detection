@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Generated datasets (regeneratable: python scripts/generate_dataset.py)
+data/raw/antenna1/*.xlsx
+data/raw/antenna1/*.csv
+data/raw/antenna1/*.json
+data/raw/antenna2/*.xlsx
+data/raw/antenna2/*.json
+
+# Trained model checkpoints stay local: the RandomForest pickles are ~330 MB
+# each, over GitHub's 100 MB file limit. Result CSVs and charts are tracked.
+results/*/models/
+
+# Editor / OS / tool output
+.DS_Store
+.vscode/
+.idea/
+catboost_info/
+
+# Not part of the code repo
+paper/
+.design-extract/
+*.dc.html
+/canvas.json
+/ra-uwb-mimo-pipeline-architecture.html
+/ra-uwb-mimo-benchmark/

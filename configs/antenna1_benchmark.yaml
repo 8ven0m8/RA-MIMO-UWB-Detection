@@ -1,0 +1,60 @@
+# Antenna I benchmark config: UNet1D + LSTM + Transformer (deep, sequence)
+# vs classical ML (flat) evaluated via leave-one-out cross-validation,
+# matching the paper's own Section 3 protocol.
+
+task: antenna1
+data_dir: data/raw/antenna1
+results_dir: results/antenna1
+seed: 42
+
+data_generation:
+  n_samples: 50
+
+classical_models:
+  random_forest:
+    n_estimators: 200
+    max_depth: null
+  decision_tree:
+    max_depth: 8
+  xgboost:
+    n_estimators: 300
+    max_depth: 6
+    learning_rate: 0.05
+  catboost:
+    iterations: 300
+    depth: 6
+    learning_rate: 0.05
+
+deep_models:
+  # Tuned for the tiny (~16 curves/fold) LOOCV regime: lower capacity
+  # (unet1d base_width down from 32) + explicit weight_decay/dropout to
+  # fight overfitting, on top of the AdamW + grad-clip + LR-scheduler +
+  # randomized internal validation split now built into the training
+  # loop itself (see src/rabench/models/deep/*.py).
+  - name: unet1d
+    base_width: 24
+    dropout: 0.1
+    max_epochs: 400
+    patience: 40
+    batch_size: 8
+    lr: 0.001
+    weight_decay: 0.0001
+  - name: lstm
+    hidden_size: 64
+    num_layers: 2
+    dropout: 0.1
+    max_epochs: 400
+    patience: 40
+    batch_size: 8
+    lr: 0.001
+    weight_decay: 0.0001
+  - name: transformer
+    d_model: 64
+    nhead: 4
+    num_layers: 2
+    dropout: 0.1
+    max_epochs: 400
+    patience: 40
+    batch_size: 8
+    lr: 0.001
+    weight_decay: 0.0001

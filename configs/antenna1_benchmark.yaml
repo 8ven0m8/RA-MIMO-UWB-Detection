@@ -33,7 +33,7 @@ deep_models:
   # loop itself (see src/rabench/models/deep/*.py).
   - name: unet1d
     base_width: 24
-    dropout: 0.1
+    dropout: 0.0
     max_epochs: 400
     patience: 40
     batch_size: 8

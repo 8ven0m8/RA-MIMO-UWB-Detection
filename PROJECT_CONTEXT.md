@@ -67,15 +67,18 @@ This is the single most important thing to understand before touching
   a `to_flat()` view. Nothing sequence-shaped exists or is needed here.
 
 **Implication for the benchmarking runner
-(`src/rabench/benchmarking/runner.py`)**: `run_antenna1_benchmark` has to
-special-case UNet1D's input (it takes a `unet_factory(in_channels,
-out_channels)` callable and calls `dataset.loocv_splits()` directly,
-separately from the classical-model loop which uses `to_flat()` +
-manual fold masking). `run_antenna2_benchmark` has no such special case
-— the deep ensemble MLP is just another flat-view factory alongside the
-classical ones. **If you add a new sequence-based deep model, it needs
-the same special-casing UNet1D gets; if it's point-wise, it slots into
-the classical-style factory dict with zero runner changes.**
+(`src/rabench/benchmarking/runner.py`)**: `run_antenna1_benchmark` runs the
+sequence models (UNet1D, LSTM, Transformer) separately from the classical
+loop: it takes `seq_deep_model_factories`, a dict of
+`factory(in_channels, out_channels)` callables, and calls
+`dataset.loocv_splits()` directly, while the classical loop uses
+`to_flat()` + manual fold masking. `run_antenna2_benchmark` has no such
+special case: the deep ensemble, LSTM and Transformer (in flat mode) are
+just more flat-view factories alongside the classical ones. Antenna II is
+split 80/20 **by curve** (`GroupShuffleSplit` on the geometry columns),
+not by row. **A new sequence-based deep model goes in the sequence
+factory dict; a point-wise one slots into the flat factory dict with zero
+runner changes.**
 
 ## 4. Data schemas (exact column names matter)
 
@@ -118,15 +121,14 @@ the classical-style factory dict with zero runner changes.**
   `classical_models:` YAML block and instantiates from this registry by
   key. **Adding a classical model = add one entry here + one registry
   key**, no runner/script changes.
-- Deep models don't have a shared registry (there are only two, and they
-  have fundamentally different call signatures — `UNet1DModel` needs
-  `in_channels`/`out_channels` inferred from data shape at benchmark
-  time, `DeepEnsembleModel` doesn't). They're wired directly in
-  `scripts/run_benchmark.py`'s `main()` via small closures
-  (`unet_factory`, `deep_ensemble_factory`). If a third deep model
-  architecture is added, prefer this same closure pattern over trying to
-  force a generic registry — the two existing models already don't fit
-  one shape, a third almost certainly won't either.
+- Deep models have two registries in `scripts/run_benchmark.py`:
+  `SEQ_DEEP_MODEL_REGISTRY` (sequence view, Antenna I: `unet1d`, `lstm`,
+  `transformer`) and `FLAT_DEEP_MODEL_REGISTRY` (flat view, Antenna II:
+  `deep_ensemble`, `lstm`, `transformer`). A config's `deep_models:` list
+  names entries by key, and every other key in an entry is passed to the
+  constructor. Sequence models are built with `in_channels`/`out_channels`
+  inferred from the data at benchmark time. `LSTMModel` and
+  `TransformerModel` pick sequence or flat mode from the input's ndim.
 
 ## 6. Every model implements `BaseRegressor` (`src/rabench/models/base.py`)
 
@@ -178,24 +180,28 @@ arg in `UNet1DModel`, one model per LOOCV fold).
 
 ## 9. Known behaviour worth knowing before "fixing" it
 
-- **UNet1D underperforms classical models badly** on the default
-  8-sample synthetic Antenna I dataset (R² ≈ 0.21 vs ≈ 0.91-0.95 for
-  classical models). This is expected and arguably the interesting
-  result for the project's thesis, not a bug: LOOCV with a from-scratch
-  CNN over only ~7 training curves per fold is a genuinely hard regime.
-  Increasing `data_generation.n_samples` in
-  `configs/antenna1_benchmark.yaml` (and regenerating data) will likely
-  narrow this gap — that's a legitimate experiment to run, not something
-  to silently "correct" in the code.
-- **DeepEnsembleMLP is ~1-2 orders of magnitude slower to train** than
-  any classical model on Antenna II (tens of seconds vs sub-second),
-  consistent with training 5 full MLPs with early stopping vs a single
-  sklearn `.fit()` call. This is real, not a measurement artifact.
-- **RandomForest has by far the largest model size** of any model in
-  both tasks (tens of MB, from pickling 200 full decision trees) — this
-  is expected and is itself a useful data point for the efficiency
-  comparison, not something to "fix" by changing hyperparameters unless
-  the user asks for a size-constrained comparison.
+- **Dropout before BatchNorm breaks UNet1D.** With `dropout: 0.1` (the
+  dropout layer at the end of each conv block feeds the next block's
+  BatchNorm) the U-Net reached only R² ≈ 0.79 on the 50-antenna baseline,
+  and its *training* R² was barely higher (≈ 0.82): a train/inference
+  variance shift, not overfitting. With `dropout: 0.0` it reaches ≈ 0.96
+  (50 antennas) and ≈ 0.988 (150 antennas, large config). Keep U-Net
+  dropout at 0. `DeepEnsembleModel` has the same Linear→BN→ReLU→Dropout
+  pattern; it was not ablated.
+- **Results sit at the noise floor.** The generators add 0.15 dB
+  (Antenna I) and 0.20 dB (Antenna II) Gaussian noise, so the best
+  possible MAE is ≈ 0.120 / 0.160 dB and R² is capped near 0.9966 /
+  0.9905. The top models are within ~0.02 dB of these floors; small
+  ranking differences near the floor are not meaningful on noisy targets.
+- **Deep models train 1-2 orders of magnitude slower** than XGBoost even
+  on a GPU. This is real, not a measurement artifact.
+- **RandomForest is by far the largest model** (0.35 GB at 50 antennas,
+  ~1 GB at 150, from pickling 200 unpruned trees). This is expected and is
+  itself a data point for the efficiency comparison.
+- **Only the last fold's model is saved** per type (`results/*/models/`,
+  gitignored). Deep models are saved as `state_dict`s without their
+  standardization statistics; recompute those from the same training data
+  (as `fit()` does) to reload them.
 
 ## 10. File-by-file map (for fast navigation)
 
@@ -207,16 +213,20 @@ src/rabench/data/datasets.py                    Antenna1Dataset (flat+sequence+L
 src/rabench/models/base.py                      BaseRegressor ABC
 src/rabench/models/classical/sklearn_models.py  RF/DT/XGBoost/CatBoost wrappers + CLASSICAL_MODEL_REGISTRY
 src/rabench/models/deep/unet1d.py               UNet1D nn.Module + UNet1DModel (BaseRegressor wrapper, sequence I/O)
+src/rabench/models/deep/lstm.py                 bidirectional LSTM, sequence mode (A-I) or flat feature-token mode (A-II)
+src/rabench/models/deep/transformer.py          Transformer encoder, sequence mode (A-I) or flat feature-token mode (A-II)
 src/rabench/models/deep/deep_ensemble.py        _MLP nn.Module + DeepEnsembleModel (BaseRegressor wrapper, flat I/O)
 src/rabench/benchmarking/metrics.py             regression_metrics, per_channel_metrics
-src/rabench/benchmarking/runner.py              run_antenna1_benchmark (LOOCV), run_antenna2_benchmark (train/test split)
+src/rabench/benchmarking/runner.py              run_antenna1_benchmark (LOOCV), run_antenna2_benchmark (80/20 split by curve)
 src/rabench/benchmarking/report.py              summarize(), plot_accuracy_comparison(), plot_efficiency_comparison()
 src/rabench/utils/seed.py                       set_global_seed()
+src/rabench/utils/progress.py                   progress bar, per-model ETA, epoch heartbeat for deep models
 scripts/generate_dataset.py                     CLI wrapper around both generators
 scripts/run_benchmark.py                        CLI: config YAML -> dataset -> models -> results/*.csv + *.png
-scripts/run_all.py                              generate both + benchmark both, in sequence
+scripts/run_all.py                              generate both + benchmark both; --variant large, --require-gpu
 configs/antenna1_benchmark.yaml                 Antenna I experiment config (models, hyperparams, paths)
 configs/antenna2_benchmark.yaml                 Antenna II experiment config
+configs/*_benchmark_large.yaml                  large GPU variants (150 antennas / 100 sweep points, bigger deep models)
 tests/test_circuit_models.py                    circuit math smoke tests
 tests/test_generators.py                        dataset generation + loading smoke tests
 ```

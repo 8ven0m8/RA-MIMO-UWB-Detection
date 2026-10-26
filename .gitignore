@@ -12,10 +12,14 @@ data/raw/antenna1/*.csv
 data/raw/antenna1/*.json
 data/raw/antenna2/*.xlsx
 data/raw/antenna2/*.json
+data/raw_large/
 
 # Trained model checkpoints stay local: the RandomForest pickles are ~330 MB
 # each, over GitHub's 100 MB file limit. Result CSVs and charts are tracked.
 results/*/models/
+
+# Training logs (progress bars, machine-specific paths)
+*.log
 
 # Editor / OS / tool output
 .DS_Store

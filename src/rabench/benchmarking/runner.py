@@ -28,12 +28,13 @@ from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit
 
 from rabench.benchmarking.metrics import per_channel_metrics, regression_metrics
-from rabench.data.datasets import Antenna1Dataset, Antenna2Dataset
+from rabench.data.datasets import ANTENNA2_PARAM_NAMES, Antenna1Dataset, Antenna2Dataset
 from rabench.models.base import BaseRegressor
 from rabench.models.deep.unet1d import UNet1DModel
+from rabench.utils.progress import fmt_duration as _fmt_duration, text_bar
 
 
 def _save_model(model: BaseRegressor, models_dir: Optional[str], filename_stem: str) -> None:
@@ -65,37 +66,50 @@ def _time_call(fn: Callable, *args, **kwargs):
     return result, t1 - t0
 
 
-def _fmt_duration(seconds: float) -> str:
-    seconds = max(0, int(round(seconds)))
-    h, rem = divmod(seconds, 3600)
-    m, s = divmod(rem, 60)
-    if h:
-        return f"{h}h{m:02d}m{s:02d}s"
-    if m:
-        return f"{m}m{s:02d}s"
-    return f"{s}s"
-
-
 class _ProgressTracker:
-    """Prints a one-line progress update after each (fold, model) run so a
+    """Prints a one-line progress bar after each (fold, model) run so a
     long LOOCV benchmark isn't silent for minutes at a time -- shows how
-    far along it is, this step's timing/accuracy, and a running ETA."""
+    far along it is, this step's timing/accuracy, and a running ETA.
 
-    def __init__(self, total: int, label: str):
-        self.total = total
+    The ETA is estimated per model (its mean wall time so far x its
+    remaining runs), not from the overall average: the runner trains
+    every classical model across all folds before any deep model, so an
+    overall average would wildly underestimate during the fast classical
+    phase. Models that haven't run yet can't be estimated, so the ETA is
+    shown as a lower bound (">=") until every model has run once."""
+
+    def __init__(self, runs_per_model: Dict[str, int], label: str):
+        self.remaining = dict(runs_per_model)
+        self.total = sum(runs_per_model.values())
         self.label = label
         self.done = 0
         self.start = time.perf_counter()
+        self._last = self.start
+        self._time_sum: Dict[str, float] = {}
+        self._count: Dict[str, int] = {}
 
-    def step(self, tag: str, train_time: float, r2: float) -> None:
+    def step(self, model_key: str, tag: str, train_time: float, r2: float) -> None:
+        now = time.perf_counter()
+        self._time_sum[model_key] = self._time_sum.get(model_key, 0.0) + (now - self._last)
+        self._count[model_key] = self._count.get(model_key, 0) + 1
+        self._last = now
+        self.remaining[model_key] -= 1
         self.done += 1
-        elapsed = time.perf_counter() - self.start
-        avg = elapsed / self.done
-        remaining = avg * (self.total - self.done)
+
+        eta = 0.0
+        lower_bound = False
+        for key, left in self.remaining.items():
+            if left <= 0:
+                continue
+            if key in self._count:
+                eta += self._time_sum[key] / self._count[key] * left
+            else:
+                lower_bound = True
+        eta_str = (">=" if lower_bound else "") + _fmt_duration(eta)
         print(
-            f"[{self.label}] {self.done}/{self.total} | {tag} | "
+            f"[{self.label}] {text_bar(self.done, self.total)} {self.done}/{self.total} | {tag} | "
             f"train={train_time:.2f}s R2={r2:.3f} | "
-            f"elapsed {_fmt_duration(elapsed)} eta {_fmt_duration(remaining)}",
+            f"elapsed {_fmt_duration(now - self.start)} eta {eta_str}",
             flush=True,
         )
 
@@ -157,7 +171,11 @@ def run_antenna1_benchmark(
         f"= {total_iters} runs",
         flush=True,
     )
-    progress = _ProgressTracker(total_iters, "antenna1")
+    progress = _ProgressTracker(
+        {f"classical/{k}": dataset.n_samples for k in classical_model_factories}
+        | {f"deep/{k}": dataset.n_samples for k in all_seq_factories},
+        "antenna1",
+    )
 
     # ---- classical models on the flat view, LOOCV over samples ----
     for held_out in range(dataset.n_samples):
@@ -182,7 +200,7 @@ def run_antenna1_benchmark(
                 _save_model(model, models_dir, model.name)
             row = _record("antenna1", model, held_out, y_val, y_pred, train_time, predict_time, measure_size=is_last_fold)
             rows.append(row)
-            progress.step(f"fold {held_out + 1}/{dataset.n_samples} classical/{name}", train_time, row.r2)
+            progress.step(f"classical/{name}", f"fold {held_out + 1}/{dataset.n_samples} classical/{name}", train_time, row.r2)
             ch_metrics = per_channel_metrics(y_val, y_pred, target_names)
             for ch_name, m in ch_metrics.items():
                 per_channel_rows.append({"task": "antenna1", "model_name": model.name, "fold": held_out, "channel": ch_name, **m})
@@ -207,7 +225,7 @@ def run_antenna1_benchmark(
                     _save_model(model, models_dir, model.name)
                 row = _record("antenna1", model, held_out, y_val_2d, y_pred_2d, train_time, predict_time, measure_size=is_last_fold)
                 rows.append(row)
-                progress.step(f"fold {held_out + 1}/{dataset.n_samples} deep/{name}", train_time, row.r2)
+                progress.step(f"deep/{name}", f"fold {held_out + 1}/{dataset.n_samples} deep/{name}", train_time, row.r2)
                 ch_metrics = per_channel_metrics(y_val_2d, y_pred_2d, target_names)
                 for ch_name, m in ch_metrics.items():
                     per_channel_rows.append({"task": "antenna1", "model_name": model.name, "fold": held_out, "channel": ch_name, **m})
@@ -236,7 +254,19 @@ def run_antenna2_benchmark(
     rows: List[BenchmarkRow] = []
 
     X, y, _, _ = dataset.to_flat(engineered_features=True)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=seed)
+    # Split by S11 curve (one geometry configuration), not by row: a random
+    # row split puts neighbouring frequency points of the same curve in
+    # both train and test, so the test set would partly measure
+    # interpolation within curves the model has already seen.
+    curve_ids, _ = pd.factorize(pd.MultiIndex.from_frame(dataset.merged[ANTENNA2_PARAM_NAMES]))
+    splitter = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=seed)
+    train_idx, test_idx = next(splitter.split(X, y, groups=curve_ids))
+    X_train, X_test, y_train, y_test = X[train_idx], X[test_idx], y[train_idx], y[test_idx]
+    print(
+        f"[antenna2] split by curve: {len(np.unique(curve_ids[train_idx]))} train / "
+        f"{len(np.unique(curve_ids[test_idx]))} test curves ({len(train_idx)} / {len(test_idx)} rows)",
+        flush=True,
+    )
 
     all_factories = dict(classical_model_factories)
     all_factories.update(deep_model_factories or {})
@@ -244,7 +274,7 @@ def run_antenna2_benchmark(
         all_factories["deep_ensemble"] = deep_ensemble_factory
 
     print(f"[antenna2] starting train/test benchmark: {len(all_factories)} models", flush=True)
-    progress = _ProgressTracker(len(all_factories), "antenna2")
+    progress = _ProgressTracker({name: 1 for name in all_factories}, "antenna2")
 
     for name, factory in all_factories.items():
         model = factory()
@@ -253,7 +283,7 @@ def run_antenna2_benchmark(
         _save_model(model, models_dir, model.name)
         row = _record("antenna2", model, None, y_test, y_pred, train_time, predict_time)
         rows.append(row)
-        progress.step(name, train_time, row.r2)
+        progress.step(name, name, train_time, row.r2)
 
     print(f"[antenna2] done: {len(all_factories)} models in {_fmt_duration(time.perf_counter() - progress.start)}", flush=True)
     return pd.DataFrame([asdict(r) for r in rows])

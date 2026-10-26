@@ -30,6 +30,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from rabench.models.base import BaseRegressor
+from rabench.utils.progress import EpochHeartbeat
 
 
 def _conv_block(in_ch: int, out_ch: int, dropout: float = 0.0) -> nn.Sequential:
@@ -188,6 +189,7 @@ class UNet1DModel(BaseRegressor):
         n_train = X_tr.shape[0]
         batch_size = max(2, min(self.batch_size, n_train))
 
+        heartbeat = EpochHeartbeat(self.name, self.max_epochs, self.patience)
         for epoch in range(self.max_epochs):
             self.net.train()
             perm_t = torch.randperm(n_train)
@@ -225,6 +227,8 @@ class UNet1DModel(BaseRegressor):
                 epochs_no_improve += 1
                 if epochs_no_improve >= self.patience:
                     break
+            heartbeat.update(epoch, val_loss, best_val_loss, epochs_no_improve)
+        heartbeat.finish(epoch, best_val_loss, epochs_no_improve)
 
         if best_state is not None:
             self.net.load_state_dict(best_state)

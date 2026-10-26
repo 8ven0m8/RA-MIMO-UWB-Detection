@@ -1,0 +1,65 @@
+# Antenna I benchmark config, LARGE variant for a dedicated GPU: same
+# LOOCV protocol and model lineup as antenna1_benchmark.yaml, but with 3x
+# the curves per fold and much wider/deeper deep models. Writes to its own
+# data/results dirs so the baseline run is left untouched.
+#
+# Run via: python scripts/run_all.py --variant large
+
+task: antenna1
+data_dir: data/raw_large/antenna1
+results_dir: results/antenna1_large
+seed: 42
+
+data_generation:
+  # LOOCV cost scales linearly with this (one fold per sample).
+  n_samples: 150
+
+classical_models:
+  random_forest:
+    n_estimators: 200
+    max_depth: null
+  decision_tree:
+    max_depth: 8
+  xgboost:
+    n_estimators: 300
+    max_depth: 6
+    learning_rate: 0.05
+  catboost:
+    iterations: 300
+    depth: 6
+    learning_rate: 0.05
+
+deep_models:
+  # More data per fold (~119 training curves vs ~39) supports more
+  # capacity; dropout/weight_decay raised alongside to keep overfitting
+  # in check, and a longer patience since lower LRs converge slower.
+  - name: unet1d
+    base_width: 64
+    # Dropout feeding BatchNorm causes a train/eval variance shift that
+    # cripples this UNet: on 8 LOOCV folds dropout=0.1 gave val R2 0.80
+    # (train R2 0.83, i.e. underfitting) vs 0.96 with dropout=0.
+    dropout: 0.0
+    max_epochs: 1000
+    patience: 80
+    batch_size: 16
+    lr: 0.0005
+    weight_decay: 0.001
+  - name: lstm
+    hidden_size: 256
+    num_layers: 3
+    dropout: 0.2
+    max_epochs: 1000
+    patience: 80
+    batch_size: 16
+    lr: 0.0005
+    weight_decay: 0.001
+  - name: transformer
+    d_model: 256  # must be divisible by nhead
+    nhead: 8
+    num_layers: 4
+    dropout: 0.1
+    max_epochs: 1000
+    patience: 80
+    batch_size: 16
+    lr: 0.0003  # training loop has no LR warmup: keep this low for a deeper encoder
+    weight_decay: 0.001

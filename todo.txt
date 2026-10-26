@@ -1,0 +1,127 @@
+TODO - RA-MIMO-UWB-Detection
+============================
+Started from a full repository review on 2026-10-09. Last updated 2026-10-26.
+Each open item is tagged with where it can run:
+  [LAPTOP] fine on a laptop CPU    [LAB GPU] needs the lab GPU    [ANY] no training
+
+
+STATUS: LARGE RUN COMPLETE (2026-10-11)
+---------------------------------------
+python3 scripts/run_all.py --variant large --require-gpu finished with no
+errors on the lab RTX A4000:
+  Antenna I : 1050 runs in 21h07m  -> results/antenna1_large/
+  Antenna II: 7 models in 11m47s   -> results/antenna2_large/
+Headline numbers:
+  Antenna I : XGBoost MAE 0.132 / R2 0.9956 (5 s per fold)
+              Transformer 0.134 / 0.9956 (48 s), LSTM 0.137 / 0.9952 (357 s)
+              UNet1D 0.189 / 0.9883 (up from 0.79, thanks to the dropout fix)
+  Antenna II: LSTM 0.164 / 0.9901, DeepEnsembleMLP 0.168 / 0.9895,
+              XGBoost 0.169 / 0.9894 (single split: treat these as a tie)
+Takeaway: the top models are at the noise floor, and XGBoost matches the
+best deep models at a fraction of the training cost.
+Note: the models/ folders are 1.8 GB in total (gitignored, local only).
+
+
+DONE
+----
+[x] 1. NVIDIA driver fixed (installed the modules for kernel 6.8.0-138).
+[x] 3a. UNet1D underperformance diagnosed: dropout feeding BatchNorm.
+[x] 3b. Large config: unet1d dropout set to 0.0.
+[x] Large configs, run_all.py --variant/--require-gpu, progress bar + ETA,
+    and the large training run itself.
+[x] 3c (Antenna I part, 2026-10-26). Baseline config now has unet1d
+    dropout 0.0; the laptop rerun wrote results/antenna1/. UNet1D went
+    from MAE 0.673 / R2 0.790 to 0.285 / 0.960; every other model matches
+    the original baseline exactly.
+[x] Paper rewritten around the large run (paper/, kept out of git).
+[x] requirements.txt switched to CPU-only wheels (torch CPU build,
+    xgboost-cpu); README documents the GPU install.
+
+
+OPEN: RERUNS (need training)
+----------------------------
+[ ] 3c. [LAPTOP ~10 min] Finish the BASELINE Antenna II run.
+        The 2026-10-26 run_all.py stopped during the Antenna II
+        Transformer, so results/antenna2/ has partial models/ but no CSVs
+        or charts. Antenna I is done (see DONE).
+        -> Run: python scripts/run_benchmark.py --config configs/antenna2_benchmark.yaml
+           (data/raw/antenna2 is already generated; this overwrites the
+           partial results/antenna2/models/)
+
+[ ] 6.  Antenna II uses a random row-level train/test split.
+        Points from the same S11 curve (neighbouring frequencies) end up in
+        both train and test, so the test set is partly interpolation inside
+        known curves. Measured impact is small (XGBoost R2 0.9893 random
+        split vs 0.9887 split by curve), but splitting by curve is the
+        correct protocol.
+        [x] Code change done (2026-10-11): runner.py now uses
+            GroupShuffleSplit on the geometry columns. Every Antenna II run
+            splits by curve from now on (large data: 239 train / 60 test
+            curves).
+        [x] Large config rerun on the lab GPU (2026-10-11):
+              results/antenna2_large/           <- new, split by curve
+              results/antenna2_large_rowsplit/  <- old, split by row
+            Result (MAE, row split -> curve split): LSTM 0.164 -> 0.161,
+            XGBoost 0.169 -> 0.166, DeepEnsembleMLP 0.168 -> 0.166,
+            Transformer 0.187 -> 0.181. Same top three, still a tie at the
+            ~0.16 noise floor. The row-split leak did not inflate the
+            results; worth one sentence in the write-up.
+        [ ] Baseline config: no separate step needed, the 3c rerun picks
+            it up automatically.
+
+[ ] 3d. [LAPTOP ~5 min, optional] DeepEnsembleMLP has the same
+        BatchNorm -> ReLU -> Dropout -> next BatchNorm pattern as UNet1D.
+        Try `dropout: 0.0` for deep_ensemble in
+        configs/antenna2_benchmark.yaml. The paper specifies 0.2, so record
+        it as a deviation if it helps.
+
+[ ] 8.  [LAB GPU for large / LAPTOP for baseline, optional] Every deep
+        model uses the same seed (0) in every fold, so results don't show
+        variation across random initialisations. Consider seed=<fold index>
+        or several seeds.
+
+
+OPEN: NO TRAINING NEEDED
+------------------------
+[ ] 2.  [ANY] results/antenna1/ has been regenerated (3c). The original
+        results/antenna2/* files are still deleted from the working tree;
+        finishing 3c replaces them (or: git restore results/antenna2/).
+
+[ ] 4.  [ANY] R2 looks high for every model because the task is easy.
+        A trivial "predict the average training curve" baseline already
+        gets R2 = 0.907 on Antenna I.
+        -> Add a "MeanCurve" baseline row to the Antenna I benchmark so
+           every model is compared against it.
+
+[ ] 5.  [ANY, write-up] Report the noise floor next to the results:
+          Antenna I : 0.15 dB noise -> MAE floor ~0.12
+          Antenna II: 0.20 dB noise -> MAE floor ~0.16
+        The best models are already at 0.132 and 0.164.
+
+[ ] 7.  [ANY, write-up] Deep models hold out 20% of their training data
+        for early stopping; classical models use 100%. Mention it.
+
+[ ] 9.  [ANY, note] Deep-model train time on GPU is measured without
+        torch.cuda.synchronize(). Fine for whole fits; keep in mind if you
+        add finer timing.
+
+[ ] 10. [ANY] Commit and push this work. It currently exists only on the
+        lab machine and your pendrive. Commit:
+          configs/*_large.yaml, scripts/run_all.py, .gitignore,
+          src/rabench/utils/progress.py, src/rabench/benchmarking/runner.py,
+          src/rabench/models/deep/*.py, commands_to_run.txt, todo.txt,
+          results/*_large/ CSVs + PNGs.
+        Don't commit: train_large.log, results/*/models/ (already ignored).
+
+[ ] 11. [LAB machine only] Silence the harmless "Unable to import Axes3D"
+        warning (safe now that training has finished):
+            sudo apt remove python3-matplotlib
+        Cause: Ubuntu's matplotlib 3.5.1 redirects mpl_toolkits away from
+        the pip-installed 3.10.9. Nothing else depends on the apt package.
+
+
+SUGGESTED ORDER
+---------------
+On the laptop:      3c (edit + run_all.py, ~2.5 h), 3d, 4.
+Any time:           10 (commit and push when you're ready).
+Lab machine only:   11 (optional).

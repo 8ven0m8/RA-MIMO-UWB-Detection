@@ -28,6 +28,7 @@ import torch
 import torch.nn as nn
 
 from rabench.models.base import BaseRegressor
+from rabench.utils.progress import EpochHeartbeat
 
 
 class _SeqLSTM(nn.Module):
@@ -187,6 +188,7 @@ class LSTMModel(BaseRegressor):
         n_train = X_tr.shape[0]
         batch_size = max(1, min(self.batch_size, n_train))
 
+        heartbeat = EpochHeartbeat(self.name, self.max_epochs, self.patience)
         for epoch in range(self.max_epochs):
             self.net.train()
             perm_t = torch.randperm(n_train)
@@ -218,6 +220,8 @@ class LSTMModel(BaseRegressor):
                 epochs_no_improve += 1
                 if epochs_no_improve >= self.patience:
                     break
+            heartbeat.update(epoch, val_loss, best_val_loss, epochs_no_improve)
+        heartbeat.finish(epoch, best_val_loss, epochs_no_improve)
 
         if best_state is not None:
             self.net.load_state_dict(best_state)

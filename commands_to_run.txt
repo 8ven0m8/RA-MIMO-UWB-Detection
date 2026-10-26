@@ -1,0 +1,53 @@
+COMMANDS TO RUN - large-model training on the lab GPU (RTX A4000)
+=================================================================
+
+WHY STEP 1 IS NEEDED
+--------------------
+The kernel was updated to 6.8.0-138, but the NVIDIA driver modules are only
+installed for the old kernel (6.8.0-110). The driver can't load, so PyTorch
+can't see the GPU. Step 1 installs the matching modules.
+
+
+STEP 1 - Fix the NVIDIA driver (needs sudo)
+-------------------------------------------
+sudo apt update
+sudo apt install linux-modules-nvidia-580-open-6.8.0-138-generic linux-modules-nvidia-580-open-generic-hwe-22.04
+sudo modprobe nvidia          # if this fails, reboot instead: sudo reboot
+
+
+STEP 2 - Check that the GPU works
+---------------------------------
+nvidia-smi                    # should list the RTX A4000
+python3 -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+                              # should print: True NVIDIA RTX A4000
+
+Do not continue until both of these work.
+
+
+STEP 3 - Start training
+-----------------------
+cd ~/Desktop/RA-MIMO-UWB-Detection
+nohup python3 scripts/run_all.py --variant large --require-gpu > train_large.log 2>&1 &
+
+  --variant large  uses configs/antenna1_benchmark_large.yaml and
+                   configs/antenna2_benchmark_large.yaml
+  --require-gpu    stops immediately if the GPU is not visible
+                   (instead of silently training on CPU for hours)
+  nohup ... &      keeps training running after you close the terminal
+
+
+STEP 4 - Monitor progress
+-------------------------
+tail -f train_large.log       # progress lines with an ETA (Ctrl+C stops watching, not training)
+watch -n 2 nvidia-smi         # a python3 process should be using the GPU
+
+Tip: check the ETA after the first few folds to see how long the full run takes.
+
+
+WHERE THE OUTPUT GOES
+---------------------
+Data:    data/raw_large/antenna1, data/raw_large/antenna2
+Results: results/antenna1_large, results/antenna2_large
+         (raw_results.csv, summary.csv, charts; trained models in models/)
+The baseline data and results (data/raw, results/antenna1, results/antenna2)
+are not touched.

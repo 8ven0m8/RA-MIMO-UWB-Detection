@@ -29,6 +29,7 @@ import torch
 import torch.nn as nn
 
 from rabench.models.base import BaseRegressor
+from rabench.utils.progress import EpochHeartbeat
 
 
 class _MLP(nn.Module):
@@ -119,6 +120,7 @@ class DeepEnsembleModel(BaseRegressor):
         best_state = None
         epochs_no_improve = 0
 
+        heartbeat = EpochHeartbeat(f"{self.name} member {seed - self.base_seed + 1}/{self.n_members}", self.max_epochs, self.patience)
         for epoch in range(self.max_epochs):
             model.train()
             perm = torch.randperm(n_train)
@@ -147,6 +149,8 @@ class DeepEnsembleModel(BaseRegressor):
                 epochs_no_improve += 1
                 if epochs_no_improve >= self.patience:
                     break
+            heartbeat.update(epoch, val_loss, best_val, epochs_no_improve)
+        heartbeat.finish(epoch, best_val, epochs_no_improve)
 
         if best_state is not None:
             model.load_state_dict(best_state)

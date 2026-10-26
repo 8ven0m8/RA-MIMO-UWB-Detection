@@ -1,0 +1,62 @@
+# Antenna II benchmark config, LARGE variant for a dedicated GPU: same
+# train/test protocol and model lineup as antenna2_benchmark.yaml, but with
+# a denser parameter sweep, larger deep models, and GPU-sized batches.
+# Writes to its own data/results dirs so the baseline run is left untouched.
+#
+# Run via: python scripts/run_all.py --variant large
+
+task: antenna2
+data_dir: data/raw_large/antenna2
+results_dir: results/antenna2_large
+seed: 42
+test_size: 0.2
+
+data_generation:
+  n_sweep_points: 100
+
+classical_models:
+  random_forest:
+    n_estimators: 200
+    max_depth: null
+  decision_tree:
+    max_depth: 8
+  xgboost:
+    n_estimators: 300
+    max_depth: 6
+    learning_rate: 0.05
+  catboost:
+    iterations: 300
+    depth: 6
+    learning_rate: 0.05
+
+deep_models:
+  # batch_size 1024 is the main GPU win here: the loops are per-batch
+  # Python, so batch 64 spends most of its time on overhead, not compute.
+  - name: deep_ensemble
+    n_members: 10
+    hidden: [1024, 512, 256, 128]
+    dropout: 0.1
+    max_epochs: 500
+    patience: 50
+    batch_size: 1024
+    lr: 0.002
+    weight_decay: 0.0001
+  - name: lstm
+    hidden_size: 128
+    num_layers: 2
+    dropout: 0.1
+    max_epochs: 400
+    patience: 40
+    batch_size: 1024
+    lr: 0.001
+    weight_decay: 0.0001
+  - name: transformer
+    d_model: 128  # must be divisible by nhead
+    nhead: 8
+    num_layers: 4
+    dropout: 0.1
+    max_epochs: 400
+    patience: 40
+    batch_size: 1024
+    lr: 0.0005
+    weight_decay: 0.0001
